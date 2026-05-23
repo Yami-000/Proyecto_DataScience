@@ -11,18 +11,18 @@ import sys
 from pathlib import Path
 
 root_dir = Path(__file__).resolve().parent
-sys.path.insert(0, str(root_dir / '1_PipeLine_API_Riot' / 'UsuarioPersonalizado'))
-sys.path.insert(0, str(root_dir / '1_PipeLine_API_Riot'))
+sys.path.insert(0, str(root_dir / 'PipeLine_API_Riot' / 'UsuarioPersonalizado'))
+sys.path.insert(0, str(root_dir / 'PipeLine_API_Riot'))
 
-from UsuarioPersonalizado.mainUP import run_pipeline
-from UsuarioPersonalizado.configUP import SETTINGS
-from data_processor import build_dataset
+from PipeLine_API_Riot.UsuarioPersonalizado.mainUP import run_pipeline
+from PipeLine_API_Riot.UsuarioPersonalizado.configUP import SETTINGS
+from PipeLine_API_Riot.data_processor import build_dataset
 
 
 def run_main_pipeline() -> None:
-    json_path = root_dir / '1_PipeLine_API_Riot' / 'dataset_specific_user.json'
-    players_output = root_dir / '1_PipeLine_API_Riot' / 'dataset_players.csv'
-    team_output = root_dir / '1_PipeLine_API_Riot' / 'dataset_team_metrics.csv'
+    json_path = root_dir / 'PipeLine_API_Riot' / 'dataset_specific_user.json'
+    players_output = root_dir / 'PipeLine_API_Riot' / 'dataset_players.csv'
+    team_output = root_dir / 'PipeLine_API_Riot' / 'dataset_team_metrics.csv'
 
     print('=== Iniciando MainPipeline ===')
     print('1) Descargando partidas del usuario específico...')
@@ -31,8 +31,8 @@ def run_main_pipeline() -> None:
     print('2) Preparando datasets para análisis...')
     build_dataset(
         input_path=json_path,
-        target_name=SETTINGS['TARGET_NAME'],
-        target_tag=SETTINGS['TARGET_TAG'],
+        target_name=SETTINGS['NAME_PLAYER'],
+        target_tag=SETTINGS['TAG_PLAYER'],
         players_output=players_output,
         team_output=team_output,
         eda_output=None,
