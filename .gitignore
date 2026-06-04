@@ -1,0 +1,6 @@
+.env
+PipeLine_API_Riot/UsuarioRandom/dataset_team_metrics_random.csv
+AnalisisDatos/dataset_players.csv
+PipeLine_API_Riot/UsuarioRandom/dataset_players_random.csv
+AnalisisDatos/dataset_team_metrics.csv
+PipeLine_API_Riot/dataset_random_gold.json

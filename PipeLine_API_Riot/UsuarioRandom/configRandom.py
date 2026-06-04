@@ -1,27 +1,30 @@
-import os
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
-# Subimos 3 niveles para encontrar el .env en la raíz
+# Cargar solo RIOT_API_KEY desde .env sin inyectar variables de usuario.
 ruta_env = Path(__file__).resolve().parent.parent.parent / '.env'
-load_dotenv(dotenv_path=ruta_env)
-
-api_key = os.getenv('RIOT_API_KEY')
+config = dotenv_values(dotenv_path=ruta_env)
+api_key = config.get('RIOT_API_KEY')
 
 if not api_key:
-    raise RuntimeError(f'RIOT_API_KEY debe estar definida en .env')
+    raise RuntimeError('RIOT_API_KEY debe estar definida en .env')
 
 SETTINGS = {
     "API_KEY": api_key,
     "REGION": "la2",
     "AMERICAS_REGION": "americas",
     
-    # Parámetros de Extracción Aleatoria
+    # === FLUJO: Identificar jugadores → Descargar partidas → Extraer 10 jugadores/partida ===
     "QUEUE": "RANKED_SOLO_5x5",
     "TIER": "GOLD",
     "DIVISION": "I",
     
-    # MATEMÁTICA DE EXTRACCIÓN: PLAYERS_LIMIT * MATCHES_PER_PLAYER = Total Partidas
-    "PLAYERS_LIMIT": 100,     # Cuántos jugadores distintos de Oro I vamos a tomar
-    "MATCHES_PER_PLAYER": 100    # Cuántas partidas recientes sacar de cada uno
+    # Paso 1: Identificar X jugadores únicos de Oro I
+    "PLAYERS_LIMIT": 1,
+    
+    # Paso 2: Descargar Y partidas de cada jugador
+    "MATCHES_PER_PLAYER": 1,
+    
+    # Total esperado: PLAYERS_LIMIT * MATCHES_PER_PLAYER = 10,000 partidas
+    # Paso 3: De cada partida, extraer 10 jugadores → ~100,000 registros en dataset_playersXpartida.csv
 }
