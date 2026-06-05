@@ -25,6 +25,10 @@ SETTINGS = {
     # Paso 2: Descargar Y partidas de cada jugador
     "MATCHES_PER_PLAYER": 1,
     
+    # Minuto específico del timeline que se usará para extraer métricas tempranas.
+    # Puedes modificar este valor en todo el proyecto.
+    "EARLY_GAME_MINUTE": 15,
+    
     # Total esperado: PLAYERS_LIMIT * MATCHES_PER_PLAYER = 10,000 partidas
     # Paso 3: De cada partida, extraer 10 jugadores → ~100,000 registros en dataset_playersXpartida.csv
 }

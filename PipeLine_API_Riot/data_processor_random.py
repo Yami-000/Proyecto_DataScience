@@ -6,170 +6,196 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+
 def load_matches(path: Path) -> List[Dict[str, Any]]:
-    """Carga JSON de partidas."""
+    """Carga JSON de partidas (MATCH-V5 response list)."""
     with path.open('r', encoding='utf-8') as f:
         return json.load(f)
 
-def extract_players_from_match(match: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Extrae los 10 jugadores de una partida con sus estadísticas.
-    
-    FLUJO: 1 partida → 10 jugadores + estadísticas
-    
-    Aquí es donde agregar nuevas variables para cada jugador:
-    - match['info']['participants'][i] contiene datos individuales del jugador
-    - match['info']['teams'] contiene datos del equipo
-    - match['metadata'] contiene info de la partida
-    """
-    info = match.get('info', {})
-    meta = match.get('metadata', {})
-    game_duration = float(info.get('gameDuration', 0) or 0)
 
-    # Datos de objetivos por equipo
+def team_objectives_from_info(team: Dict[str, Any]) -> Dict[str, int]:
+    """Extrae los flags 'first' de objetivos tempranos del dict team."""
+    obj = team.get('objectives', {}) or {}
+    return {
+        'first_blood': int(obj.get('champion', {}).get('first', 0) or 0),
+        'first_dragon': int(obj.get('dragon', {}).get('first', 0) or 0),
+        'first_tower': int(obj.get('tower', {}).get('first', 0) or 0),
+        'first_rift_herald': int(obj.get('riftHerald', {}).get('first', 0) or 0),
+    }
+
+
+def safe_get_participant_challenge(p: Dict[str, Any], keys: List[str]) -> Optional[float]:
+    """Busca varias keys dentro de participant['challenges'] o participant y devuelve la primera encontrada."""
+    challs = p.get('challenges', {}) or {}
+    for k in keys:
+        if k in challs:
+            try:
+                return float(challs.get(k) or 0)
+            except Exception:
+                continue
+    # fallback to timeline if present (e.g., xpPerMinDeltas)
+    tl = p.get('timeline', {}) or {}
+    # xpPerMinDeltas example: {'0-10': 300.0}
+    xp = tl.get('xpPerMinDeltas', {}) or {}
+    if '0-10' in xp:
+        try:
+            return float(xp.get('0-10') or 0)
+        except Exception:
+            pass
+    return None
+
+
+def extract_team_early_features(match: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Extrae métricas tempranas a nivel de equipo desde el JSON de MATCH-V5.
+
+    - Usa flags 'first' desde info.teams.objectives (first_blood, first_dragon, first_tower, first_rift_herald)
+    - Extrae CS en primeros 10 minutos si existe en participant['challenges'] (keys probables)
+    - Extrae gold diff a 15' si existe (varias keys posibles en challenges)
+    - Extrae xp per min en 0-10 desde participant['timeline']['xpPerMinDeltas'] si está
+    - Composición por roles (porcentaje de soporte, jungle, carry)
+
+    Nota: Si alguna métrica no está disponible en MATCH-V5 sin TIMELINE, la función la deja en NaN/0.
+    """
+    info = match.get('info', {}) or {}
+    metadata = match.get('metadata', {}) or {}
+
+    # Map teamId -> objective flags
     team_objs = {}
-    for team in info.get('teams', []):
-        t_id = team.get('teamId')
-        def get_obj(obj_name, key):
-            return team.get('objectives', {}).get(obj_name, {}).get(key, 0)
-        team_objs[t_id] = {
-            'first_blood': int(get_obj('champion', 'first')),
-            'first_dragon': int(get_obj('dragon', 'first')),
-            'first_tower': int(get_obj('tower', 'first')),
-            'total_dragons': int(get_obj('dragon', 'kills')),
-            'total_towers': int(get_obj('tower', 'kills')),
-            'total_barons': int(get_obj('baron', 'kills')),
-        }
+    for t in info.get('teams', []) or []:
+        t_id = t.get('teamId')
+        team_objs[t_id] = team_objectives_from_info(t)
 
-    rows = []
+    # Prepare per-team accumulators
+    teams: Dict[int, Dict[str, Any]] = {}
     for p in info.get('participants', []) or []:
-        team_id = p.get('teamId')
-        challs = p.get('challenges', {})
-        t_obj = team_objs.get(team_id, {})
+        t_id = p.get('teamId')
+        if t_id not in teams:
+            teams[t_id] = {
+                'match_id': metadata.get('matchId'),
+                'team_id': t_id,
+                'match_win': int(p.get('win', False)),
+                'player_count': 0,
+                'cs_first_10_sum': 0.0,
+                'cs_first_10_count': 0,
+                'gold_diff_15_sum': 0.0,
+                'gold_diff_15_count': 0,
+                'xp_0_10_sum': 0.0,
+                'xp_0_10_count': 0,
+                'n_support': 0,
+                'n_jungle': 0,
+                'n_carry': 0,
+            }
+
+        rec = teams[t_id]
+        rec['player_count'] += 1
+
+        # CS first 10: common challenge keys
+        cs = safe_get_participant_challenge(p, ['laneMinionsFirst10Minutes', 'minionsFirst10Minutes', 'creepsPerMinDeltas_0-10'])
+        if cs is not None:
+            rec['cs_first_10_sum'] += cs
+            rec['cs_first_10_count'] += 1
+
+        # gold diff at 15: different providers may name it differently
+        gold15 = safe_get_participant_challenge(p, ['goldDiffAt15', 'goldDiff15', 'goldAt15', 'goldDiff'])
+        if gold15 is not None:
+            rec['gold_diff_15_sum'] += gold15
+            rec['gold_diff_15_count'] += 1
+
+        # xp per min 0-10 from timeline
+        xp01 = safe_get_participant_challenge(p, ['xpPerMinDeltas_0-10', 'xpPerMinDeltas'])
+        if xp01 is not None:
+            rec['xp_0_10_sum'] += xp01
+            rec['xp_0_10_count'] += 1
+
+        # composition by team_position (roles provided in participant)
+        role = (p.get('teamPosition') or '').upper()
+        if role == 'UTILITY':
+            rec['n_support'] += 1
+        if role == 'JUNGLE':
+            rec['n_jungle'] += 1
+        if role in ('MIDDLE', 'BOTTOM'):
+            rec['n_carry'] += 1
+
+    # Convert accumulators to rows
+    rows: List[Dict[str, Any]] = []
+    for t_id, rec in teams.items():
+        # objectives
+        obj = team_objs.get(t_id, {})
+
+        player_count = rec.get('player_count') or 5
+        cs_mean = (rec['cs_first_10_sum'] / rec['cs_first_10_count']) if rec['cs_first_10_count'] > 0 else np.nan
+        gold_diff_15 = (rec['gold_diff_15_sum'] / rec['gold_diff_15_count']) if rec['gold_diff_15_count'] > 0 else np.nan
+        xp_0_10 = (rec['xp_0_10_sum'] / rec['xp_0_10_count']) if rec['xp_0_10_count'] > 0 else np.nan
 
         row = {
-            'match_id': meta.get('matchId'),
-            'platform_id': meta.get('platformId'),
-            'game_creation': info.get('gameCreation'),
-            'game_duration_s': game_duration,
-            'game_duration_min': round(game_duration / 60.0, 2) if game_duration >= 0 else np.nan,
-            'team_id': team_id,
-            'match_win': int(p.get('win', False)),
-            'participant_id': p.get('participantId'),
-            
-            # === IDENTIDAD DEL JUGADOR ===
-            'summoner_name': p.get('summonerName') or p.get('riotIdGameName') or 'Unknown',
-            'riot_id_game_name': p.get('riotIdGameName'),
-            'riot_id_tagline': p.get('riotIdTagline'),
-            'champion': p.get('championName', 'Unknown'),
-            'team_position': p.get('teamPosition'),
-            
-            # === ESTADÍSTICAS DE COMBATE ===
-            'kills': p.get('kills', 0) or 0,
-            'deaths': p.get('deaths', 0) or 0,
-            'assists': p.get('assists', 0) or 0,
-            'gold_earned': p.get('goldEarned', 0) or 0,
-            'vision_score': p.get('visionScore', 0) or 0,
-            'total_damage_to_champions': p.get('totalDamageDealtToChampions', 0) or 0,
-            'magic_damage_to_champions': p.get('magicDamageDealtToChampions', 0) or 0,
-            'physical_damage_to_champions': p.get('physicalDamageDealtToChampions', 0) or 0,
-            'total_minions_killed': p.get('totalMinionsKilled', 0) or 0,
-            'neutral_minions_killed': p.get('neutralMinionsKilled', 0) or 0,
-            'cs_total': (p.get('totalMinionsKilled', 0) or 0) + (p.get('neutralMinionsKilled', 0) or 0),
-            'time_ccing_others': p.get('timeCCingOthers', 0) or 0,
-            'total_time_spent_dead': p.get('totalTimeSpentDead', 0) or 0,
-            
-            # === MÉTRICAS PER-MINUTO ===
-            'gold_per_min': challs.get('goldPerMinute') or np.nan,
-            'vision_score_per_min': challs.get('visionScorePerMinute') or np.nan,
-            'kda': challs.get('kda') or np.nan,
-            'damage_per_minute': challs.get('damagePerMinute', 0) or 0,
-            'damage_per_gold': challs.get('damagePerGold', 0) or 0,
-            
-            # === DAÑO A OBJETIVOS ===
-            'damage_dealt_to_turrets': p.get('damageDealtToTurrets', 0) or 0,
-            'damage_dealt_to_objectives': p.get('damageDealtToObjectives', 0) or 0,
-            'kill_participation': challs.get('killParticipation', 0) or 0,
-            
-            # === OBJETIVOS DEL EQUIPO ===
-            'first_blood': t_obj.get('first_blood', 0),
-            'first_dragon': t_obj.get('first_dragon', 0),
-            'first_tower': t_obj.get('first_tower', 0),
-            'total_dragons': t_obj.get('total_dragons', 0),
-            'total_towers': t_obj.get('total_towers', 0),
-            'total_barons': t_obj.get('total_barons', 0),
-            
-            # === NUEVA VARIABLE A AGREGAR AQUÍ POR EL USUARIO ===
-            # Ejemplo: 'nuevavar': p.get('path.to.value', 0)
+            'match_id': rec['match_id'],
+            'team_id': t_id,
+            'match_win': int(rec.get('match_win', 0)),
+
+            # Early objective flags (booleans)
+            'first_blood': int(obj.get('first_blood', 0)),
+            'first_dragon': int(obj.get('first_dragon', 0)),
+            'first_tower': int(obj.get('first_tower', 0)),
+            'first_rift_herald': int(obj.get('first_rift_herald', 0)),
+
+            # Early aggregated metrics
+            'cs_first_10_mean': cs_mean,
+            'gold_diff_15_mean': gold_diff_15,
+            'xp_0_10_mean': xp_0_10,
+
+            # Composition
+            'pct_support': rec.get('n_support', 0) / player_count,
+            'pct_jungle': rec.get('n_jungle', 0) / player_count,
+            'pct_carry': rec.get('n_carry', 0) / player_count,
         }
         rows.append(row)
 
     return rows
 
-def process_all_matches(matches: List[Dict[str, Any]]) -> pd.DataFrame:
-    """Convierte lista de partidas a DataFrame."""
-    records = []
-    for match in matches:
-        rows = extract_players_from_match(match)
-        if rows:
-            records.extend(rows)
-    return pd.DataFrame(records)
 
-def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Limpia y normaliza el DataFrame."""
-    if df.empty:
-        return df
-
-    # Eliminar duplicados
-    df = df.drop_duplicates(subset=['match_id', 'participant_id'])
-    df = df.dropna(subset=['match_id', 'team_id', 'champion'])
-    
-    # Llenar valores faltantes
-    df['champion'] = df['champion'].fillna('Unknown')
-    df['summoner_name'] = df['summoner_name'].fillna('Unknown')
-    
-    # Convertir a numéricas
-    numeric_cols = [
-        'game_duration_s', 'game_duration_min', 'match_win', 'kills', 'deaths', 'assists',
-        'gold_earned', 'vision_score', 'total_damage_to_champions', 'magic_damage_to_champions',
-        'physical_damage_to_champions', 'total_minions_killed', 'neutral_minions_killed', 'cs_total',
-        'time_ccing_others', 'total_time_spent_dead', 'gold_per_min', 'vision_score_per_min', 'kda',
-        'damage_dealt_to_turrets', 'damage_dealt_to_objectives', 'kill_participation', 
-        'damage_per_minute', 'damage_per_gold', 'first_blood', 'first_dragon', 'first_tower',
-        'total_dragons', 'total_towers', 'total_barons'
-    ]
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    # Llenar NaN con mediana en métricas
-    for col in ['gold_per_min', 'vision_score_per_min', 'kda', 'kill_participation', 'damage_per_minute', 'damage_per_gold']:
-        if col in df.columns:
-            df[col] = df[col].fillna(df[col].median())
-    
-    df = df.fillna(0)
-    return df
-
-def build_dataset(input_path: Path, output_path: Path) -> None:
+def build_early_team_dataset(input_path: Path, output_path: Path) -> None:
     """
-    Flujo completo:
-    1. Cargar JSON de partidas
-    2. Extraer 10 jugadores de cada partida
-    3. Limpiar datos
-    4. Guardar en CSV
+    Genera `dataset_team_metrics_early_game.csv` con filas por equipo (team 100 / 200).
+    Cada fila contiene solo features tempranas y la variable objetivo `match_win`.
     """
     matches = load_matches(input_path)
-    df = process_all_matches(matches)
-    
-    if df.empty:
-        raise ValueError(f'No se encontraron partidas válidas en {input_path}')
+    records: List[Dict[str, Any]] = []
+    for match in matches:
+        rows = extract_team_early_features(match)
+        if rows:
+            records.extend(rows)
 
-    df = clean_dataframe(df)
+    df = pd.DataFrame(records)
+    if df.empty:
+        raise ValueError(f'No se extrajeron features tempranas desde {input_path}')
+
+    # Normalizar/limpiar
+    df['cs_first_10_mean'] = pd.to_numeric(df['cs_first_10_mean'], errors='coerce')
+    df['gold_diff_15_mean'] = pd.to_numeric(df['gold_diff_15_mean'], errors='coerce')
+    df['xp_0_10_mean'] = pd.to_numeric(df['xp_0_10_mean'], errors='coerce')
+    df[['first_blood', 'first_dragon', 'first_tower', 'first_rift_herald', 'match_win']] = df[['first_blood', 'first_dragon', 'first_tower', 'first_rift_herald', 'match_win']].fillna(0).astype(int)
+    df[['pct_support', 'pct_jungle', 'pct_carry']] = df[['pct_support', 'pct_jungle', 'pct_carry']].fillna(0)
+
+    # Evitar data leakage: NO incluir variables de final de partida
+    # Guardar CSV
     df.to_csv(output_path, index=False)
-    
-    print(f'✓ {len(df)} registros (10 jugadores × partidas) guardados en: {output_path}')
+    print(f'✓ {len(df)} filas guardadas en: {output_path}')
+
+
+def build_dataset(input_path: Path, output_path: Path) -> None:
+    """Compatibilidad hacia atrás: alias que delega a `build_early_team_dataset`.
+
+    `MainPipeline.py` importa `build_dataset`. Este wrapper mantiene esa API y
+    genera el CSV de métricas tempranas por equipo.
+    """
+    print('NOTICE: Using compatibility wrapper build_dataset -> build_early_team_dataset')
+    return build_early_team_dataset(input_path=input_path, output_path=output_path)
+
 
 if __name__ == '__main__':
-    input_json = Path('dataset_random_gold.json')
-    output_csv = Path('dataset_playersXpartida.csv')
-    build_dataset(input_json, output_csv)
+    # Usar rutas relativas al archivo para permitir ejecución directa desde cualquier CWD
+    base_dir = Path(__file__).resolve().parent
+    input_json = base_dir / 'dataset_random_gold.json'
+    output_csv = base_dir / 'dataset_team_metrics_early_game.csv'
+    build_early_team_dataset(input_json, output_csv)

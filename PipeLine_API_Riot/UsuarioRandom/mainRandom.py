@@ -45,14 +45,14 @@ def run_pipeline_random():
         matches = get_matches_data(puuid, m_limit)
         all_matches.extend(matches)
         
-        print(f"[{idx}/{len(entries)}] {player_name}: {len(matches)} partidas")
+        print(f"[{idx}/{len(entries)}] {player_name}: {len(matches)} matches con timeline")
 
-    output_path = Path(__file__).resolve().parent.parent / "dataset_random_gold.json"
+    output_path = Path(__file__).resolve().parent.parent / "dataset_random_gold_timeline.json"
     
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(all_matches, f)
 
-    print(f"\n✓ {len(all_matches)} partidas guardadas en: {output_path}")
+    print(f"\n✓ {len(all_matches)} partidas con timeline guardadas en: {output_path}")
 
 if __name__ == "__main__":
     run_pipeline_random()
